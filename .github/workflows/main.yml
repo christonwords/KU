@@ -1,0 +1,82 @@
+name: Build KU VST3
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Build VST3 (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache JUCE
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: juce-8.0.4-${{ runner.os }}
+
+      - name: Configure
+        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -G "Visual Studio 17 2022" -A x64
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Stage VST3
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path staging | Out-Null
+          $vst3 = Get-ChildItem -Path build -Recurse -Filter "*.vst3" |
+                  Where-Object { $_.PSIsContainer } | Select-Object -First 1
+          if ($null -eq $vst3) { Write-Error "No .vst3 found"; exit 1 }
+          $dest = "staging\KU.vst3"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          robocopy "$($vst3.FullName)" "$dest" /E /NFL /NDL /NJH /NJS
+          if ($LASTEXITCODE -le 7) { $LASTEXITCODE = 0 }
+          Write-Host "Staged: $(Get-ChildItem staging -Recurse | Measure-Object).Count files"
+
+      - name: Zip with 7-Zip
+        run: 7z a KU-Windows.zip .\staging\*
+        shell: pwsh
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: KU-Windows
+          path: KU-Windows.zip
+          retention-days: 30
+
+  build-macos:
+    name: Build VST3 (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache JUCE
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: juce-8.0.4-${{ runner.os }}
+
+      - name: Configure
+        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Stage & Zip
+        run: |
+          mkdir -p staging
+          find build -name "*.vst3" -type d | head -1 | xargs -I{} cp -r {} staging/KU.vst3
+          zip -r KU-macOS.zip staging/KU.vst3
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: KU-macOS
+          path: KU-macOS.zip
+          retention-days: 30
