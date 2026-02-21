@@ -18,13 +18,87 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/_deps
-          key: juce-8.0.4-${{ runner.os }}
+          key: juce-8.0.4-${{ runner.os }}-v3
 
       - name: Configure
         run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -G "Visual Studio 17 2022" -A x64
 
       - name: Build
         run: cmake --build build --config Release --parallel
+
+      - name: Diagnose VST3
+        shell: pwsh
+        run: |
+          Write-Host "========== SEARCHING FOR VST3 =========="
+          $allVst3 = Get-ChildItem -Path build -Recurse -Filter "*.vst3"
+          foreach ($f in $allVst3) { Write-Host "  Found: $($f.FullName)  [Dir=$($f.PSIsContainer)]" }
+
+          $vst3dir = $allVst3 | Where-Object { $_.PSIsContainer } | Select-Object -First 1
+          if ($null -eq $vst3dir) { Write-Host "NO VST3 FOLDER FOUND"; exit 0 }
+
+          Write-Host "`n========== VST3 CONTENTS =========="
+          Get-ChildItem $vst3dir.FullName -Recurse | ForEach-Object {
+            Write-Host "  $($_.FullName)  [$($_.Length) bytes]"
+          }
+
+          # Find the actual DLL inside the vst3 bundle
+          $dll = Get-ChildItem $vst3dir.FullName -Recurse | 
+                 Where-Object { $_.Extension -in ".dll",".vst3" -and -not $_.PSIsContainer } |
+                 Select-Object -First 1
+
+          if ($null -eq $dll) { Write-Host "NO DLL FOUND INSIDE VST3"; exit 0 }
+          Write-Host "`n========== DLL: $($dll.FullName) =========="
+
+          # Check architecture
+          $bytes = [System.IO.File]::ReadAllBytes($dll.FullName)
+          $peOffset = [System.BitConverter]::ToInt32($bytes, 0x3C)
+          $machine  = [System.BitConverter]::ToUInt16($bytes, $peOffset + 4)
+          $archName = switch ($machine) {
+            0x8664 { "x64 (64-bit) - CORRECT for FL Studio 64-bit" }
+            0x14C  { "x86 (32-bit) - WRONG! FL Studio needs 64-bit" }
+            default { "Unknown (0x$($machine.ToString('X4')))" }
+          }
+          Write-Host "Architecture: $archName"
+
+          # Check dependencies via dumpbin
+          $dumpbin = Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Recurse -Filter "dumpbin.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($null -ne $dumpbin) {
+            Write-Host "`n========== DEPENDENCIES =========="
+            & $dumpbin.FullName /DEPENDENTS "$($dll.FullName)" 2>&1 | ForEach-Object { Write-Host "  $_" }
+          }
+
+          # Try to actually load the DLL and report any missing deps
+          Write-Host "`n========== LOAD TEST =========="
+          try {
+            $assembly = [System.Reflection.Assembly]::LoadFile($dll.FullName)
+            Write-Host "  LoadFile: SUCCESS"
+          } catch {
+            Write-Host "  LoadFile FAILED: $($_.Exception.Message)"
+          }
+
+          Add-Type -TypeDefinition @"
+using System; using System.Runtime.InteropServices;
+public class WinLoader {
+    [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+    public static extern IntPtr LoadLibraryEx(string path, IntPtr file, uint flags);
+    [DllImport("kernel32.dll")] public static extern uint GetLastError();
+}
+"@
+          $handle = [WinLoader]::LoadLibraryEx($dll.FullName, [IntPtr]::Zero, 0)
+          if ($handle -eq [IntPtr]::Zero) {
+            $err = [WinLoader]::GetLastError()
+            $errMsg = switch ($err) {
+              0x7E  { "ERROR_MOD_NOT_FOUND (0x7E) - Missing DLL dependency" }
+              0xC1  { "ERROR_BAD_EXE_FORMAT (0xC1) - Wrong architecture (32 vs 64 bit)" }
+              0x7F  { "ERROR_PROC_NOT_FOUND (0x7F) - Entry point missing" }
+              0x5   { "ERROR_ACCESS_DENIED (0x5) - Permission issue" }
+              default { "Error code: 0x$($err.ToString('X')) ($err)" }
+            }
+            Write-Host "  LoadLibraryEx FAILED: $errMsg"
+          } else {
+            Write-Host "  LoadLibraryEx: SUCCESS - DLL loads correctly"
+          }
+          exit 0
 
       - name: Stage VST3
         shell: pwsh
@@ -37,11 +111,10 @@ jobs:
           New-Item -ItemType Directory -Force -Path $dest | Out-Null
           robocopy "$($vst3.FullName)" "$dest" /E /NFL /NDL /NJH /NJS
           if ($LASTEXITCODE -le 7) { $LASTEXITCODE = 0 }
-          Write-Host "Staged: $(Get-ChildItem staging -Recurse | Measure-Object).Count files"
 
       - name: Zip with 7-Zip
-        run: 7z a KU-Windows.zip .\staging\*
         shell: pwsh
+        run: 7z a KU-Windows.zip .\staging\*
 
       - name: Upload
         uses: actions/upload-artifact@v4
@@ -60,7 +133,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/_deps
-          key: juce-8.0.4-${{ runner.os }}
+          key: juce-8.0.4-${{ runner.os }}-v3
 
       - name: Configure
         run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"
