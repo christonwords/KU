@@ -67,7 +67,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout KUAudioProcessor::createPara
     return {p.begin(), p.end()};
 }
 
-//==============================================================================
 KUAudioProcessor::KUAudioProcessor()
     : AudioProcessor(BusesProperties()
         .withInput ("Input",  juce::AudioChannelSet::stereo(), true)
@@ -80,7 +79,6 @@ KUAudioProcessor::KUAudioProcessor()
 
 KUAudioProcessor::~KUAudioProcessor() {}
 
-//==============================================================================
 void KUAudioProcessor::prepareToPlay(double newSR, int block)
 {
     prepared = false;
@@ -92,9 +90,7 @@ void KUAudioProcessor::prepareToPlay(double newSR, int block)
 
     juce::dsp::ProcessSpec spec { newSR, (juce::uint32)block, 2 };
 
-    // Build a safe default coefficient (passthrough peak at 1kHz)
     auto defCoeff = juce::dsp::IIR::Coefficients<float>::makePeakFilter(newSR, 1000.0, 1.0, 1.0f);
-
     for (int i = 0; i < NUM_EQ_BANDS; ++i)
     {
         eqBands[i].reset(new IIRDuplicator());
@@ -105,201 +101,175 @@ void KUAudioProcessor::prepareToPlay(double newSR, int block)
 
     limiterLPF.reset(new IIRDuplicator());
     *limiterLPF->state = *juce::dsp::IIR::Coefficients<float>::makeLowPass(newSR, 18000.0);
-    limiterLPF->prepare(spec);
-    limiterLPF->reset();
+    limiterLPF->prepare(spec); limiterLPF->reset();
 
     bassShelf.reset(new IIRDuplicator());
     *bassShelf->state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf(newSR, 80.0, 0.7f, 2.0f);
-    bassShelf->prepare(spec);
-    bassShelf->reset();
+    bassShelf->prepare(spec); bassShelf->reset();
 
     dcBlock.reset(new IIRDuplicator());
     *dcBlock->state = *juce::dsp::IIR::Coefficients<float>::makeHighPass(newSR, 20.0);
-    dcBlock->prepare(spec);
-    dcBlock->reset();
+    dcBlock->prepare(spec); dcBlock->reset();
 
     reverb.reset(new juce::dsp::Reverb());
-    reverb->prepare(spec);
-    reverb->reset();
+    reverb->prepare(spec); reverb->reset();
 
-    for (int i = 0; i < NUM_EQ_BANDS; ++i)
-        updateEQBand(i);
-
+    for (int i = 0; i < NUM_EQ_BANDS; ++i) updateEQBand(i);
     prepared = true;
 }
 
 void KUAudioProcessor::releaseResources() { prepared = false; }
 
-//==============================================================================
 void KUAudioProcessor::updateEQBand(int i)
 {
     if (!eqBands[i]) return;
     juce::String pre = "eq" + juce::String(i);
-    float freq = juce::jlimit(20.f, 20000.f, apvts.getRawParameterValue(pre+"Freq")->load());
+    float freq = juce::jlimit(20.f,20000.f,apvts.getRawParameterValue(pre+"Freq")->load());
     float gain = apvts.getRawParameterValue(pre+"Gain")->load();
-    float q    = juce::jlimit(0.1f, 10.f, apvts.getRawParameterValue(pre+"Q")->load());
-
+    float q    = juce::jlimit(0.1f,10.f,apvts.getRawParameterValue(pre+"Q")->load());
     juce::dsp::IIR::Coefficients<float>::Ptr c;
-    if      (i == 0) c = juce::dsp::IIR::Coefficients<float>::makeLowShelf (sr,(double)freq,(double)q,juce::Decibels::decibelsToGain(gain));
-    else if (i == 1) c = juce::dsp::IIR::Coefficients<float>::makeHighPass (sr,(double)freq,(double)q);
-    else if (i == 6) c = juce::dsp::IIR::Coefficients<float>::makeLowPass  (sr,(double)freq,(double)q);
-    else if (i == 7) c = juce::dsp::IIR::Coefficients<float>::makeHighShelf(sr,(double)freq,(double)q,juce::Decibels::decibelsToGain(gain));
-    else             c = juce::dsp::IIR::Coefficients<float>::makePeakFilter(sr,(double)freq,(double)q,juce::Decibels::decibelsToGain(gain));
+    if      (i==0) c=juce::dsp::IIR::Coefficients<float>::makeLowShelf (sr,(double)freq,(double)q,juce::Decibels::decibelsToGain(gain));
+    else if (i==1) c=juce::dsp::IIR::Coefficients<float>::makeHighPass (sr,(double)freq,(double)q);
+    else if (i==6) c=juce::dsp::IIR::Coefficients<float>::makeLowPass  (sr,(double)freq,(double)q);
+    else if (i==7) c=juce::dsp::IIR::Coefficients<float>::makeHighShelf(sr,(double)freq,(double)q,juce::Decibels::decibelsToGain(gain));
+    else           c=juce::dsp::IIR::Coefficients<float>::makePeakFilter(sr,(double)freq,(double)q,juce::Decibels::decibelsToGain(gain));
     *eqBands[i]->state = *c;
 }
 
-//==============================================================================
 void KUAudioProcessor::processEQ(juce::AudioBuffer<float>& buf)
 {
-    for (int i = 0; i < NUM_EQ_BANDS; ++i)
+    for (int i=0;i<NUM_EQ_BANDS;++i)
     {
         if (!eqBands[i]) continue;
-        if (apvts.getRawParameterValue("eq"+juce::String(i)+"On")->load() < 0.5f) continue;
+        if (apvts.getRawParameterValue("eq"+juce::String(i)+"On")->load()<0.5f) continue;
         updateEQBand(i);
         juce::dsp::AudioBlock<float> blk(buf);
         eqBands[i]->process(juce::dsp::ProcessContextReplacing<float>(blk));
     }
 }
 
-//==============================================================================
 void KUAudioProcessor::processCompressor(juce::AudioBuffer<float>& buf)
 {
-    float thresh = apvts.getRawParameterValue("compThresh") ->load();
-    float ratio  = apvts.getRawParameterValue("compRatio")  ->load();
-    float attMs  = apvts.getRawParameterValue("compAttack") ->load();
-    float relMs  = apvts.getRawParameterValue("compRelease")->load();
-    float knee   = apvts.getRawParameterValue("compKnee")   ->load();
-    float makeup = apvts.getRawParameterValue("compMakeup") ->load();
-    float mix    = apvts.getRawParameterValue("compMix")    ->load() * 0.01f;
-
-    float fsR = (float)sr;
-    float att = std::exp(-1.f / (fsR * juce::jmax(0.01f, attMs) * 0.001f));
-    float rel = std::exp(-1.f / (fsR * juce::jmax(0.01f, relMs) * 0.001f));
-    float mkL = juce::Decibels::decibelsToGain(makeup);
-
-    const int N = buf.getNumSamples(), Ch = buf.getNumChannels();
+    float thresh=apvts.getRawParameterValue("compThresh")->load();
+    float ratio =apvts.getRawParameterValue("compRatio") ->load();
+    float attMs =apvts.getRawParameterValue("compAttack")->load();
+    float relMs =apvts.getRawParameterValue("compRelease")->load();
+    float knee  =apvts.getRawParameterValue("compKnee")  ->load();
+    float makeup=apvts.getRawParameterValue("compMakeup")->load();
+    float mix   =apvts.getRawParameterValue("compMix")   ->load()*0.01f;
+    float fsR=(float)sr;
+    float att=std::exp(-1.f/(fsR*juce::jmax(0.01f,attMs)*0.001f));
+    float rel=std::exp(-1.f/(fsR*juce::jmax(0.01f,relMs)*0.001f));
+    float mkL=juce::Decibels::decibelsToGain(makeup);
+    const int N=buf.getNumSamples(),Ch=buf.getNumChannels();
     juce::AudioBuffer<float> dry; dry.makeCopyOf(buf);
-    auto* L = buf.getWritePointer(0);
-    auto* R = Ch > 1 ? buf.getWritePointer(1) : L;
-    const auto* dryL = dry.getReadPointer(0);
-    const auto* dryR = Ch > 1 ? dry.getReadPointer(1) : dryL;
-
-    float latestGr = 0.f;
-    for (int i = 0; i < N; ++i)
+    auto* L=buf.getWritePointer(0);
+    auto* R=Ch>1?buf.getWritePointer(1):L;
+    const auto* dryL=dry.getReadPointer(0);
+    const auto* dryR=Ch>1?dry.getReadPointer(1):dryL;
+    float latestGr=0.f;
+    for (int i=0;i<N;++i)
     {
-        float peak = std::max(std::abs(L[i]), std::abs(R[i]));
-        compEnvL = (peak > compEnvL) ? peak + att*(compEnvL-peak) : peak + rel*(compEnvL-peak);
-        float envDb = juce::Decibels::gainToDecibels(compEnvL + 1e-10f);
-        float halfK = knee*0.5f, over = envDb-thresh, grDb = 0.f;
-        if (knee > 0.f && over > -halfK && over < halfK)
-        { float t=(over+halfK)/knee; grDb=-(1.f-1.f/ratio)*t*t*knee*0.5f; }
-        else if (over >= halfK)
-            grDb = thresh + over/ratio - envDb;
-        latestGr = grDb;
-        float gr = juce::Decibels::decibelsToGain(grDb) * mkL;
-        L[i] = L[i]*gr*mix + dryL[i]*(1.f-mix);
-        R[i] = R[i]*gr*mix + dryR[i]*(1.f-mix);
+        float peak=std::max(std::abs(L[i]),std::abs(R[i]));
+        compEnvL=(peak>compEnvL)?peak+att*(compEnvL-peak):peak+rel*(compEnvL-peak);
+        float envDb=juce::Decibels::gainToDecibels(compEnvL+1e-10f);
+        float halfK=knee*0.5f,over=envDb-thresh,grDb=0.f;
+        if (knee>0.f&&over>-halfK&&over<halfK){float t=(over+halfK)/knee;grDb=-(1.f-1.f/ratio)*t*t*knee*0.5f;}
+        else if (over>=halfK) grDb=thresh+over/ratio-envDb;
+        latestGr=grDb;
+        float gr=juce::Decibels::decibelsToGain(grDb)*mkL;
+        L[i]=L[i]*gr*mix+dryL[i]*(1.f-mix);
+        R[i]=R[i]*gr*mix+dryR[i]*(1.f-mix);
     }
-    compGrSmooth += ((-latestGr) - compGrSmooth) * 0.1f;
+    compGrSmooth+=((-latestGr)-compGrSmooth)*0.1f;
     grLevel.store(compGrSmooth);
 }
 
-//==============================================================================
 void KUAudioProcessor::processLimiter(juce::AudioBuffer<float>& buf)
 {
-    float thresh  = apvts.getRawParameterValue("limThresh")  ->load();
-    float relMs   = apvts.getRawParameterValue("limRelease") ->load();
-    float ceiling = apvts.getRawParameterValue("limCeiling") ->load();
-    float rel  = std::exp(-1.f / ((float)sr * juce::jmax(1.f,relMs) * 0.001f));
-    float tLin = juce::Decibels::decibelsToGain(thresh);
-    float cLin = juce::Decibels::decibelsToGain(ceiling);
-    const int N = buf.getNumSamples(), Ch = buf.getNumChannels();
-    auto* L = buf.getWritePointer(0);
-    auto* R = Ch > 1 ? buf.getWritePointer(1) : L;
-    for (int i = 0; i < N; ++i)
+    float thresh =apvts.getRawParameterValue("limThresh")  ->load();
+    float relMs  =apvts.getRawParameterValue("limRelease") ->load();
+    float ceiling=apvts.getRawParameterValue("limCeiling") ->load();
+    float rel=std::exp(-1.f/((float)sr*juce::jmax(1.f,relMs)*0.001f));
+    float tLin=juce::Decibels::decibelsToGain(thresh);
+    float cLin=juce::Decibels::decibelsToGain(ceiling);
+    const int N=buf.getNumSamples(),Ch=buf.getNumChannels();
+    auto* L=buf.getWritePointer(0);
+    auto* R=Ch>1?buf.getWritePointer(1):L;
+    for (int i=0;i<N;++i)
     {
-        float peak = std::max(std::abs(L[i]), std::abs(R[i]));
-        limEnvL = (peak > limEnvL) ? peak : peak + rel*(limEnvL-peak);
-        float gr = (limEnvL > tLin && limEnvL > 1e-10f) ? tLin/limEnvL : 1.f;
-        gr = std::min(gr, 1.f);
-        L[i] = softClip(L[i]*gr) * cLin;
-        R[i] = softClip(R[i]*gr) * cLin;
+        float peak=std::max(std::abs(L[i]),std::abs(R[i]));
+        limEnvL=(peak>limEnvL)?peak:peak+rel*(limEnvL-peak);
+        float gr=(limEnvL>tLin&&limEnvL>1e-10f)?tLin/limEnvL:1.f;
+        L[i]=softClip(L[i]*std::min(gr,1.f))*cLin;
+        R[i]=softClip(R[i]*std::min(gr,1.f))*cLin;
     }
 }
 
-//==============================================================================
 void KUAudioProcessor::processReverb(juce::AudioBuffer<float>& buf)
 {
     if (!reverb) return;
-    float size  = apvts.getRawParameterValue("reverbSize") ->load() * 0.01f;
-    float damp  = apvts.getRawParameterValue("reverbDamp") ->load() * 0.01f;
-    float width = apvts.getRawParameterValue("reverbWidth")->load() * 0.01f;
-    float mix   = apvts.getRawParameterValue("reverbMix")  ->load() * 0.01f;
+    float size =apvts.getRawParameterValue("reverbSize") ->load()*0.01f;
+    float damp =apvts.getRawParameterValue("reverbDamp") ->load()*0.01f;
+    float width=apvts.getRawParameterValue("reverbWidth")->load()*0.01f;
+    float mix  =apvts.getRawParameterValue("reverbMix")  ->load()*0.01f;
     juce::dsp::Reverb::Parameters rp;
     rp.roomSize=juce::jlimit(0.f,1.f,size); rp.damping=juce::jlimit(0.f,1.f,damp);
-    rp.width=juce::jlimit(0.f,1.f,width);   rp.wetLevel=mix; rp.dryLevel=1.f-mix; rp.freezeMode=0.f;
+    rp.width=juce::jlimit(0.f,1.f,width); rp.wetLevel=mix; rp.dryLevel=1.f-mix; rp.freezeMode=0.f;
     reverb->setParameters(rp);
     juce::dsp::AudioBlock<float> blk(buf);
     reverb->process(juce::dsp::ProcessContextReplacing<float>(blk));
 }
 
-//==============================================================================
 void KUAudioProcessor::processBassBoost(juce::AudioBuffer<float>& buf)
 {
     if (!bassShelf) return;
-    float freq  = juce::jlimit(20.f,400.f, apvts.getRawParameterValue("bassFreq") ->load());
-    float gain  = apvts.getRawParameterValue("bassGain") ->load();
-    float drive = apvts.getRawParameterValue("bassDrive")->load() * 0.01f;
-    *bassShelf->state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf(
-        sr,(double)freq,0.7f,juce::Decibels::decibelsToGain(gain));
+    float freq =juce::jlimit(20.f,400.f,apvts.getRawParameterValue("bassFreq") ->load());
+    float gain =apvts.getRawParameterValue("bassGain") ->load();
+    float drive=apvts.getRawParameterValue("bassDrive")->load()*0.01f;
+    *bassShelf->state=*juce::dsp::IIR::Coefficients<float>::makeLowShelf(sr,(double)freq,0.7f,juce::Decibels::decibelsToGain(gain));
     juce::dsp::AudioBlock<float> blk(buf);
     bassShelf->process(juce::dsp::ProcessContextReplacing<float>(blk));
-    if (drive > 0.001f)
-        for (int c = 0; c < buf.getNumChannels(); ++c)
-        { auto* ch = buf.getWritePointer(c);
-          for (int i = 0; i < buf.getNumSamples(); ++i)
-              ch[i] = std::tanh(ch[i]*(1.f+drive*3.f))/(1.f+drive*0.1f); }
+    if (drive>0.001f)
+        for (int c=0;c<buf.getNumChannels();++c)
+        { auto* ch=buf.getWritePointer(c);
+          for (int i=0;i<buf.getNumSamples();++i)
+              ch[i]=std::tanh(ch[i]*(1.f+drive*3.f))/(1.f+drive*0.1f); }
 }
 
-//==============================================================================
 void KUAudioProcessor::processBitcrusher(juce::AudioBuffer<float>& buf)
 {
-    float bits = juce::jlimit(2.f,24.f,   apvts.getRawParameterValue("crushBits")  ->load());
-    float rate = juce::jlimit(100.f,44100.f,apvts.getRawParameterValue("crushRate") ->load());
-    float mix  = apvts.getRawParameterValue("crushMix")   ->load() * 0.01f;
-    float dith = apvts.getRawParameterValue("crushDither")->load() * 0.01f;
-    float step = std::pow(2.f,-(bits-1.f)), rr = rate/(float)sr;
+    float bits=juce::jlimit(2.f,24.f,apvts.getRawParameterValue("crushBits")->load());
+    float rate=juce::jlimit(100.f,44100.f,apvts.getRawParameterValue("crushRate")->load());
+    float mix =apvts.getRawParameterValue("crushMix")   ->load()*0.01f;
+    float dith=apvts.getRawParameterValue("crushDither")->load()*0.01f;
+    float step=std::pow(2.f,-(bits-1.f)),rr=rate/(float)sr;
     juce::AudioBuffer<float> dry; dry.makeCopyOf(buf);
-    const int N = buf.getNumSamples(), Ch = buf.getNumChannels();
-    auto* L = buf.getWritePointer(0);
-    auto* R = Ch>1 ? buf.getWritePointer(1) : L;
-    const auto* dryL = dry.getReadPointer(0);
-    const auto* dryR = Ch>1 ? dry.getReadPointer(1) : dryL;
+    const int N=buf.getNumSamples(),Ch=buf.getNumChannels();
+    auto* L=buf.getWritePointer(0); auto* R=Ch>1?buf.getWritePointer(1):L;
+    const auto* dryL=dry.getReadPointer(0); const auto* dryR=Ch>1?dry.getReadPointer(1):dryL;
     juce::Random rng;
-    for (int i = 0; i < N; ++i)
+    for (int i=0;i<N;++i)
     {
         bcPhaseL+=rr; if(bcPhaseL>=1.f){bcPhaseL-=1.f;bcHeldL=L[i];}
         bcPhaseR+=rr; if(bcPhaseR>=1.f){bcPhaseR-=1.f;bcHeldR=R[i];}
         float da=dith*step*0.5f;
         float qL=std::round((bcHeldL+(float)rng.nextDouble()*da)/step)*step;
         float qR=std::round((bcHeldR+(float)rng.nextDouble()*da)/step)*step;
-        L[i]=qL*mix+dryL[i]*(1.f-mix);
-        R[i]=qR*mix+dryR[i]*(1.f-mix);
+        L[i]=qL*mix+dryL[i]*(1.f-mix); R[i]=qR*mix+dryR[i]*(1.f-mix);
     }
 }
 
-//==============================================================================
 void KUAudioProcessor::processStutter(juce::AudioBuffer<float>& buf)
 {
-    float rate  = apvts.getRawParameterValue("stutterRate") ->load();
-    float depth = apvts.getRawParameterValue("stutterDepth")->load() * 0.01f;
-    int   pat   = (int)apvts.getRawParameterValue("stutterPat")->load();
+    float rate =apvts.getRawParameterValue("stutterRate") ->load();
+    float depth=apvts.getRawParameterValue("stutterDepth")->load()*0.01f;
+    int   pat  =(int)apvts.getRawParameterValue("stutterPat")->load();
     static const uint16_t patterns[8]={0xFFFF,0xAAAA,0xCCCC,0xF0F0,0xBBBB,0x8888,0xEEEE,0x9999};
-    const int N = buf.getNumSamples(), Ch = buf.getNumChannels();
-    float inc = juce::jlimit(0.0001f,0.5f,rate/(float)sr);
-    auto* L = buf.getWritePointer(0);
-    auto* R = Ch>1 ? buf.getWritePointer(1) : L;
-    for (int i = 0; i < N; ++i)
+    const int N=buf.getNumSamples(),Ch=buf.getNumChannels();
+    float inc=juce::jlimit(0.0001f,0.5f,rate/(float)sr);
+    auto* L=buf.getWritePointer(0); auto* R=Ch>1?buf.getWritePointer(1):L;
+    for (int i=0;i<N;++i)
     {
         stutterBufL[stutterWritePos]=L[i]; stutterBufR[stutterWritePos]=R[i];
         stutterWritePos=(stutterWritePos+1)%STUTTER_BUF;
@@ -313,23 +283,22 @@ void KUAudioProcessor::processStutter(juce::AudioBuffer<float>& buf)
     }
 }
 
-//==============================================================================
 void KUAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
 {
     if (!prepared) return;
     juce::ScopedNoDenormals noDenormals;
-    const int N=buffer.getNumSamples(), Ch=buffer.getNumChannels();
+    const int N=buffer.getNumSamples(),Ch=buffer.getNumChannels();
     if (N==0||Ch<1) return;
 
     buffer.applyGain(juce::Decibels::decibelsToGain(apvts.getRawParameterValue("masterIn")->load()));
     inputLevelL.store(juce::Decibels::gainToDecibels(buffer.getMagnitude(0,0,N)+1e-10f));
     if (Ch>1) inputLevelR.store(juce::Decibels::gainToDecibels(buffer.getMagnitude(1,0,N)+1e-10f));
 
-    if (apvts.getRawParameterValue("autoMode")->load() > 0.5f)
+    if (apvts.getRawParameterValue("autoMode")->load()>0.5f)
     {
-        auto enableIfOff = [&](const char* id) {
-            if (apvts.getRawParameterValue(id)->load() < 0.5f)
-                if (auto* b = dynamic_cast<juce::AudioParameterBool*>(apvts.getParameter(id)))
+        auto enableIfOff=[&](const char* id){
+            if (apvts.getRawParameterValue(id)->load()<0.5f)
+                if (auto* b=dynamic_cast<juce::AudioParameterBool*>(apvts.getParameter(id)))
                     b->setValueNotifyingHost(1.f);
         };
         enableIfOff("eqOn"); enableIfOff("compOn"); enableIfOff("limOn");
@@ -344,30 +313,20 @@ void KUAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Midi
     if (apvts.getRawParameterValue("limOn")    ->load()>0.5f) processLimiter   (buffer);
 
     if (dcBlock)
-    {
-        juce::dsp::AudioBlock<float> blk(buffer);
-        dcBlock->process(juce::dsp::ProcessContextReplacing<float>(blk));
-    }
+    { juce::dsp::AudioBlock<float> blk(buffer); dcBlock->process(juce::dsp::ProcessContextReplacing<float>(blk)); }
 
     buffer.applyGain(juce::Decibels::decibelsToGain(apvts.getRawParameterValue("masterOut")->load()));
     outputLevelL.store(juce::Decibels::gainToDecibels(buffer.getMagnitude(0,0,N)+1e-10f));
     if (Ch>1) outputLevelR.store(juce::Decibels::gainToDecibels(buffer.getMagnitude(1,0,N)+1e-10f));
 }
 
-//==============================================================================
 juce::AudioProcessorEditor* KUAudioProcessor::createEditor() { return new KUAudioProcessorEditor(*this); }
 
 void KUAudioProcessor::getStateInformation(juce::MemoryBlock& dest)
-{
-    auto state=apvts.copyState();
-    std::unique_ptr<juce::XmlElement> xml(state.createXml());
-    copyXmlToBinary(*xml, dest);
-}
-void KUAudioProcessor::setStateInformation(const void* data, int size)
-{
-    std::unique_ptr<juce::XmlElement> xml(getXmlFromBinary(data,size));
-    if (xml&&xml->hasTagName(apvts.state.getType()))
-        apvts.replaceState(juce::ValueTree::fromXml(*xml));
-}
+{ auto state=apvts.copyState(); std::unique_ptr<juce::XmlElement> xml(state.createXml()); copyXmlToBinary(*xml,dest); }
+
+void KUAudioProcessor::setStateInformation(const void* data,int size)
+{ std::unique_ptr<juce::XmlElement> xml(getXmlFromBinary(data,size));
+  if (xml&&xml->hasTagName(apvts.state.getType())) apvts.replaceState(juce::ValueTree::fromXml(*xml)); }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new KUAudioProcessor(); }
